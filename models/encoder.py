@@ -3,6 +3,7 @@ from torch import nn
 import torch.nn.functional as F
 import numpy as np
 from .dilated_conv import DilatedConvEncoder
+from .nn import LeakySineLU, PackedDeformableConvolution1d, SEConv1d, DisjoinEncoder
 
 def generate_continuous_mask(B, T, n=5, l=0.1):
     res = torch.full((B, T), True, dtype=torch.bool)
@@ -30,18 +31,112 @@ class TSEncoder(nn.Module):
         self.output_dims = output_dims
         self.hidden_dims = hidden_dims
         self.mask_mode = mask_mode
+
+        # # ------------------ TS2Vec ------------------ #
         self.input_fc = nn.Linear(input_dims, hidden_dims)
-        self.feature_extractor = DilatedConvEncoder(
-            hidden_dims,
-            [hidden_dims] * depth + [output_dims],
-            kernel_size=3
-        )
+
+
+        # # ------------------ ECG2Vec ------------------
+        # self.conv_block = nn.Sequential(
+        #     nn.Conv1d(input_dims, hidden_dims, kernel_size=8, padding='same'),
+        #     nn.BatchNorm1d(hidden_dims),
+        #     LeakySineLU(),
+
+        #     nn.Conv1d(hidden_dims, hidden_dims, kernel_size=5, padding='same'),
+        #     nn.BatchNorm1d(hidden_dims),
+        #     nn.GELU(),
+
+        #     nn.Conv1d(hidden_dims, hidden_dims, kernel_size=3, padding='same'),
+        # )
+
+        # # ------------------ ECG2Vec+deformable ------------------ #
+        # self.conv_block = nn.Sequential(
+        #     nn.Conv1d(input_dims, hidden_dims, kernel_size=8, padding='same'),
+        #     nn.BatchNorm1d(hidden_dims),
+        #     LeakySineLU(),
+
+        #     nn.Conv1d(hidden_dims, hidden_dims, kernel_size=5, padding='same'),
+        #     nn.BatchNorm1d(hidden_dims),
+        #     nn.GELU(),
+
+        #     PackedDeformableConvolution1d(hidden_dims, hidden_dims, kernel_size=3, padding='same')
+        # )
+
+        # # ------------------ ECG2Vec+Squeeze Excitation (lá ele) ------------------ #
+        # self.conv_block = nn.Sequential(
+        #     nn.Conv1d(input_dims, hidden_dims, kernel_size=8, padding='same'),
+        #     nn.BatchNorm1d(hidden_dims),
+        #     LeakySineLU(),
+
+        #     nn.Conv1d(hidden_dims, hidden_dims, kernel_size=5, padding='same'),
+        #     nn.BatchNorm1d(hidden_dims),
+        #     nn.GELU(),
+
+        #     SEConv1d(hidden_dims, hidden_dims, kernel_size=3, padding=3//2)
+        # )
+
+        # # ------------------ ECG2Vec+SE v2 ------------------ #
+        # self.conv_block = nn.Sequential(
+        #     SEConv1d(input_dims, hidden_dims, kernel_size=8, padding='same'),
+        #     nn.BatchNorm1d(hidden_dims),
+        #     LeakySineLU(),
+
+        #     nn.Conv1d(hidden_dims, hidden_dims, kernel_size=5, padding='same'),
+        #     nn.BatchNorm1d(hidden_dims),
+        #     nn.GELU(),
+            
+        #     nn.Conv1d(hidden_dims, hidden_dims, kernel_size=3, padding='same'),
+        # )
+
+        # # ------------------ ECG2Vec+Disjoint ------------------ #
+        # self.conv_block = nn.Sequential(
+        #     DisjoinEncoder(input_dims, hidden_dims, kernel_size=8),
+        #     nn.BatchNorm1d(hidden_dims),
+        #     LeakySineLU(),
+
+        #     nn.Conv1d(hidden_dims, hidden_dims, kernel_size=5, padding='same'),
+        #     nn.BatchNorm1d(hidden_dims),
+        #     nn.GELU(),
+
+        #     nn.Conv1d(hidden_dims, hidden_dims, kernel_size=3, padding='same'),
+        # )
+
+        # # ------------------ ECG2Vec+Disjoint+Def ------------------ #
+        # self.conv_block = nn.Sequential(
+        #     DisjoinEncoder(input_dims, hidden_dims, kernel_size=8),
+        #     nn.BatchNorm1d(hidden_dims),
+        #     LeakySineLU(),
+
+        #     nn.Conv1d(hidden_dims, hidden_dims, kernel_size=5, padding='same'),
+        #     nn.BatchNorm1d(hidden_dims),
+        #     nn.GELU(),
+
+        #     PackedDeformableConvolution1d(hidden_dims, hidden_dims, kernel_size=3, padding='same')
+        # )
+        
+
+
+        self.feature_extractor = DilatedConvEncoder(hidden_dims, [hidden_dims] * depth + [output_dims], kernel_size=3, activation=nn.GELU())
+
+        # self.feature_extractor = nn.Sequential(
+        #     DilatedConvEncoder(hidden_dims, [hidden_dims] * depth, kernel_size=3, activation=nn.GELU()),
+        #     nn.BatchNorm1d(hidden_dims),
+        #     nn.GELU(),
+
+        #     PackedDeformableConvolution1d(hidden_dims, output_dims, kernel_size=3, padding='same')
+        # )
+
         self.repr_dropout = nn.Dropout(p=0.1)
         
     def forward(self, x, mask=None):  # x: B x T x input_dims
         nan_mask = ~x.isnan().any(axis=-1)
         x[~nan_mask] = 0
+
         x = self.input_fc(x)  # B x T x Ch
+        
+        # x = x.transpose(1, 2)  # (B x T x Ch) -> (B x Ch x T)
+        # x = self.conv_block(x)  
+        # x = x.transpose(1, 2)  # (B x Ch x T) -> (B x T x Ch)
         
         # generate & apply mask
         if mask is None:

@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import numpy as np
+from .nn import LeakySineLU
 
 class SamePadConv(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, dilation=1, groups=1):
@@ -23,22 +24,23 @@ class SamePadConv(nn.Module):
         return out
     
 class ConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, dilation, final=False):
+    def __init__(self, in_channels, out_channels, kernel_size, dilation, activation, final=False):
         super().__init__()
         self.conv1 = SamePadConv(in_channels, out_channels, kernel_size, dilation=dilation)
         self.conv2 = SamePadConv(out_channels, out_channels, kernel_size, dilation=dilation)
         self.projector = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels or final else None
+        self.activation = activation
     
     def forward(self, x):
         residual = x if self.projector is None else self.projector(x)
-        x = F.gelu(x)
+        x = self.activation(x)
         x = self.conv1(x)
-        x = F.gelu(x)
+        x = self.activation(x)
         x = self.conv2(x)
         return x + residual
 
 class DilatedConvEncoder(nn.Module):
-    def __init__(self, in_channels, channels, kernel_size):
+    def __init__(self, in_channels, channels, kernel_size, activation):
         super().__init__()
         self.net = nn.Sequential(*[
             ConvBlock(
@@ -46,6 +48,7 @@ class DilatedConvEncoder(nn.Module):
                 channels[i],
                 kernel_size=kernel_size,
                 dilation=2**i,
+                activation=activation,
                 final=(i == len(channels)-1)
             )
             for i in range(len(channels))
